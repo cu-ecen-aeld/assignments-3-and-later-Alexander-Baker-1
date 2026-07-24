@@ -17,7 +17,13 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
 
-    return true;
+    if (system(cmd) == 0) {
+        return true;
+    }
+    else {
+        syslog(LOG_ERR, "System call failed");
+        return false;
+    }
 }
 
 /**
@@ -59,6 +65,34 @@ bool do_exec(int count, ...)
  *
 */
 
+    int status;
+
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        syslog(LOG_ERR, "Fork failed");
+        return false;
+    } else if (pid == 0) {
+        if (execv(command[0], command) == -1) {
+            syslog(LOG_ERR, "Execution failed");
+            _exit(EXIT_FAILURE);
+        }
+    } else {
+        if (waitpid(pid, &status, 0) == -1) {
+            syslog(LOG_ERR, "Waitpid failed");
+            va_end(args);
+            return false;
+        }
+
+        va_end(args);
+                
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            return true;
+        }
+        
+        return false;
+    }
+
     va_end(args);
 
     return true;
@@ -92,6 +126,51 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+
+    int status;
+
+    int file_descriptor = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    
+    if (file_descriptor < 0) {
+        syslog(LOG_ERR, "Failed to open output file");
+        return false;
+    }
+
+    pid_t pid = fork();
+
+    switch (pid) {
+        case -1:
+            syslog(LOG_ERR, "Fork failed");
+            close(file_descriptor);
+            return false;
+        case 0:
+            if (dup2(file_descriptor, 1) < 0) {
+                syslog(LOG_ERR, "Dup2 redirection failed");
+                _exit(EXIT_FAILURE);
+            }
+
+            close(file_descriptor);
+
+            if (execv(command[0], command) == -1) {
+               syslog(LOG_ERR, "Execv execution failed");
+                _exit(EXIT_FAILURE); 
+            }
+
+            break;
+        default:
+            close(file_descriptor);
+
+            if (waitpid(pid, &status, 0) == -1) {
+                syslog(LOG_ERR, "Waitpid tracking failed");
+                return false;
+            }
+
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                return true; 
+            }
+            
+            return false;
+        }
 
     va_end(args);
 
